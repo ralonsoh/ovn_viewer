@@ -1,25 +1,30 @@
 # Copyright (c) 2020 Fistro Co.
 
 from ovs import ovsuuid
-from ovsdbapp.backend.ovs_idl import idlutils
-from ovsdbapp.backend.ovs_idl import connection
-from ovsdbapp.schema.ovn_northbound import impl_idl as nb_impl_idl
 import tkinter
+from tkinter import font
 from tkinter import ttk
 
-from ovn_viewer import connection
 from ovn_viewer import constants
 from ovn_viewer import treetypes
 
 
-###############################################################################
 class OvnViewer(tkinter.Frame):
 
     def __init__(self, master_window, ovn_nb, ovn_sb):
         super(OvnViewer, self).__init__(master=master_window)
         self._ovn_nb = ovn_nb
         self._ovn_sb = ovn_sb
+        self.root_tree = None
+        self._configure_monspace_font()
         self._init_ui()
+
+    def _configure_monspace_font(self):
+        for font_family in (ff for ff in font.families()
+                            if ff in constants.MONOSPACE_FONTS):
+            self._font = font.Font(family=font_family, size=10, weight=font.NORMAL)
+            return
+        self._font = font.Font(size=10, weight=font.NORMAL)
 
     def _add_menu(self):
         menubar = tkinter.Menu(master=self.master)
@@ -42,10 +47,6 @@ class OvnViewer(tkinter.Frame):
     def _init_ui(self):
         self._add_menu()
 
-        frame = tkinter.Frame(master=self.master)
-        #frame.pack(fill=BOTH, expand=1)
-        #frame.pack()
-
         master_frame = tkinter.Frame(master=self.master)
         master_frame.grid(row=1, column=0, columnspan=5, padx=0, pady=0,
                           sticky=tkinter.E + tkinter.W + tkinter.N + tkinter.S)
@@ -53,26 +54,25 @@ class OvnViewer(tkinter.Frame):
         master_frame.columnconfigure(0, weight=1)
         master_frame.pack(expand=True, fill='both')
 
-        ###############################################################################
-        # Creating treeview window
+        #######################################################################
+        style = ttk.Style()
+        style.configure('Treeview', font=self._font)
         self.treeview = ttk.Treeview(master_frame)
-        # # Calling pack method on the treeview
+        #self.treeview.option_add("*font", self._font)
         self.treeview.pack(expand=True, fill='both')
 
-        ###############################################################################
-        # Create text box
+        # Bottom text box.
         self.text_box = tkinter.StringVar()
         label = tkinter.Label(master_frame, textvariable=self.text_box,
-                              height=6, justify=tkinter.LEFT)
+                              height=6, justify=tkinter.LEFT,
+                              font=self._font)
         label.pack(side='left')
         self.text_box.set('(no item selected)')
         self.treeview.bind('<<TreeviewSelect>>', self._event_select)
 
-        # LOGICAL_WITCH
-        ls_tt = treetypes.LogicalSwitches(self.treeview, self._ovn_nb,
-                                          self._ovn_sb)
-        ls_tt.populate_subtree()
-
+        self.root_tree = treetypes.RootTree(self.treeview, self._ovn_nb,
+                                            self._ovn_sb)
+        self.root_tree.populate_subtree()
 
     def _menu_exit(self):
         self.quit()
@@ -94,41 +94,6 @@ class OvnViewer(tkinter.Frame):
         tree_item = self.treeview.item(selected)
         if not tree_item['tags']:
             return
-        uuid = ovsuuid.from_string(tree_item['values'][0])
-        ovs_item_type = tree_item['tags'][0]
-        ovs_item = self._ovn_nb.tables[ovs_item_type].rows.get(uuid)
-        self.print_on_text_box(self.text_box, ovs_item._data, ovs_item_type)
-
-    def print_on_text_box(self, text_box, datum, type):
-        # TODO(ralonsoh): this is an abomination. Let each element to print
-        #                 its own data into the text box.
-        if type == constants.LOGICAL_SWITCH:
-            text_box.set('name: %(name)s\n'
-                         'other_config: %(other_config)s\n'
-                         'external_ids: %(external_ids)s' %
-                         {'name': datum['name'],
-                          'other_config': datum['other_config'],
-                          'external_ids': datum['external_ids'],
-                          })
-
-        elif type == constants.LOGICAL_SWITCH_PORT:
-            text_box.set(
-                'id: %(id)s  --  name: %(name)s\n'
-                'device_id: %(device_id)s\n'
-                'addresses: %(addresses)s  -- cidrs: %(cidrs)s\n'
-                'ha_chassis_group: %(ha_chassis_group)s\n'
-                'type: %(type)s\n' %
-                {'id': datum['name'],
-                 'device_id': datum['external_ids'].get('neutron:device_id'),
-                 'name': datum['external_ids'].get('neutron:port_name'),
-                 'addresses': datum['addresses'],
-                 'cidrs': datum['external_ids'].get('neutron:cidrs'),
-                 'ha_chassis_group': datum['ha_chassis_group'],
-                 'type': datum['type'],
-                 })
-
-
-
-
-
-
+        uuid = tree_item['values'][0]
+        ovn_item_type = tree_item['tags'][0]
+        self.root_tree.print_on_text_box(self.text_box, ovn_item_type, uuid)
