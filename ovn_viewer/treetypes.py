@@ -13,12 +13,14 @@ class TreeType(object, metaclass=abc.ABCMeta):
 
     TYPE = None
 
-    def __init__(self, root_tree, ovn_nb, ovn_sb, parent_leaf=None):
+    def __init__(self, root_tree, ovn_nb, ovn_sb, parent_leaf=None,
+                 parent_uuid=None):
         self._root_tree = root_tree
         self._treeview = root_tree.treeview
         self._ovn_nb = ovn_nb
         self._ovn_sb = ovn_sb
         self._parent_leaf = parent_leaf or ''
+        self._parent_uuid = parent_uuid
         self._own_leaf = None
 
     @property
@@ -55,7 +57,7 @@ class TreeType(object, metaclass=abc.ABCMeta):
         """Print single element information in a string variable"""
 
     @abc.abstractmethod
-    def store_info(self, datum):
+    def store_info(self, row):
         """Store information for each element to be used in "print_info"
 
         Each tree will store the information of each leaf (and subtrees), in
@@ -77,9 +79,9 @@ class RootTree(object):
             constants.PORT_GROUP: {},
             constants.QOS: {},
             constants.ACL: {},
-            constants.DHCP_OPTIONS: {},
-            constants.GATEWAY_CHASSIS: {},
         }
+        self._tree = {}  # Main parents: LS and PG.
+        self._tree_parents = {}
 
     def populate_subtree(self):
         ls_tt = LogicalSwitches(self, self._ovn_nb, self._ovn_sb)
@@ -93,8 +95,48 @@ class RootTree(object):
         except KeyError:
             return
 
-    def set_leaf(self, item_type, uuid, datum):
+    def add_leaf(self, item_type, uuid, parent_uuid, datum):
         self._db[item_type][uuid] = datum
+        if item_type == constants.LOGICAL_SWITCH:
+            self._add_leaf_ls(uuid)
+        elif item_type == constants.LOGICAL_SWITCH_PORT:
+            self._add_leaf_lsp(uuid, parent_uuid)
+        elif item_type == constants.QOS:
+            self._add_leaf_qos(uuid, parent_uuid)
+        elif item_type == constants.PORT_GROUP:
+            self._add_leaf_pg(uuid)
+        elif item_type == constants.ACL:
+            self._add_leaf_acl(uuid, parent_uuid)
+
+    def _add_leaf_ls(self, uuid):
+        if uuid in self._tree:
+            return
+        self._tree[uuid] = {}
+
+    def _add_leaf_lsp(self, uuid, ls_uuid):
+        if uuid in self._tree[ls_uuid]:
+            return
+        self._tree[ls_uuid][uuid] = {}
+        self._tree_parents[uuid] = ls_uuid
+
+    def _add_leaf_qos(self, uuid, lsp_uuid):
+        ls_uuid = self._tree_parents[lsp_uuid]
+        if uuid in self._tree[ls_uuid][lsp_uuid]:
+            return
+
+        self._tree[ls_uuid][lsp_uuid][uuid] = True  # No child leafs.
+        self._tree_parents[uuid] = lsp_uuid
+
+    def _add_leaf_pg(self, uuid):
+        if uuid in self._tree:
+            return
+        self._tree[uuid] = {}
+
+    def _add_leaf_acl(self, uuid, pg_uuid):
+        if uuid in self._tree[pg_uuid]:
+            return
+        self._tree[pg_uuid][uuid] = True  # No child leafs.
+        self._tree_parents[uuid] = pg_uuid
 
     @property
     def treeview(self):
@@ -115,27 +157,21 @@ class LogicalSwitches(TreeType):
 
     TYPE = constants.LOGICAL_SWITCH
 
-    def __init__(self, root_tree, ovn_nb, ovn_sb, parent_leaf=None):
-        super(LogicalSwitches, self).__init__(root_tree, ovn_nb, ovn_sb,
-                                              parent_leaf=parent_leaf)
-        self._lsp_trees = {}
-
     def populate_subtree(self, uuids=None):
-        self._child_trees = {}
         for ls in self._ovn_nb.tables[self.TYPE].rows.values():
-            key = self.store_info(ls)
-            text = key
+            ls_row = rowview.RowView(ls)
+            uuid = self.store_info(ls_row)
+            text = uuid
             network_name = ls._data['external_ids'].get('neutron:network_name')
             if network_name:
                 text += ' (network: %s)' % network_name
             child_leaf = self._treeview.insert(
-                self.own_leaf, 'end', key, text=text, tags=self.TYPE,
-                values=str(ls.uuid))
+                self.own_leaf, 'end', uuid, text=text, tags=self.TYPE,
+                values=str(ls_row.uuid))
             lsp_tt = LogicalSiwtchPorts(self._root_tree, self._ovn_nb,
-                                        self._ovn_sb, parent_leaf=child_leaf)
-            lsp_tt.populate_subtree(uuids=[port.value for port in
-                                           ls._data['ports'].values.keys()])
-            self._lsp_trees[ls.uuid] = lsp_tt
+                                        self._ovn_sb, parent_leaf=child_leaf,
+                                        parent_uuid=uuid)
+            lsp_tt.populate_subtree(uuids=[port.uuid for port in ls_row.ports])
 
     @staticmethod
     def print_info(text_box, datum):
@@ -146,13 +182,12 @@ class LogicalSwitches(TreeType):
             {'name': datum['name'], 'other_config': datum['other_config'],
              'external_ids': datum['external_ids']})
 
-    def store_info(self, datum):
-        row = rowview.RowView(datum)
+    def store_info(self, row):
         key = str(row.uuid)
         datum = {
             'name': row.name, 'other_config': row.other_config,
             'external_ids': row.external_ids}
-        self._root_tree.set_leaf(self.TYPE, key, datum)
+        self._root_tree.add_leaf(self.TYPE, key, None, datum)
         return key
 
 
@@ -160,23 +195,17 @@ class LogicalSiwtchPorts(TreeType):
 
     TYPE = constants.LOGICAL_SWITCH_PORT
 
-    def __init__(self, treeview, ovn_nb, ovn_sb, parent_leaf=None):
-        super(LogicalSiwtchPorts, self).__init__(treeview, ovn_nb, ovn_sb,
-                                                 parent_leaf=parent_leaf)
-        self._qos_trees = {}
-
     def populate_subtree(self, uuids=None):
-        self._child_trees = {}
         for port_uuid in uuids:
             port = self._ovn_nb.tables[self.TYPE].rows.get(port_uuid)
-            key = self.store_info(port)
+            port_row = rowview.RowView(port)
+            uuid = self.store_info(port_row)
             child_leaf = self._treeview.insert(
-                self.own_leaf, 'end', key, text=key, tags=self.TYPE,
-                values=key)
+                self.own_leaf, 'end', uuid, text=uuid, tags=self.TYPE,
+                values=uuid)
             qos_tt = QoSes(self._root_tree, self._ovn_nb, self._ovn_sb,
-                           parent_leaf=child_leaf)
+                           parent_leaf=child_leaf, parent_uuid=uuid)
             qos_tt.populate_subtree()
-            self._qos_trees[port.uuid] = qos_tt
 
     @staticmethod
     def print_info(text_box, datum):
@@ -190,8 +219,7 @@ class LogicalSiwtchPorts(TreeType):
              'cidrs': datum['cidrs'], 'type': datum['type'],
              'ha_chassis_group': datum['ha_chassis_group']})
 
-    def store_info(self, datum):
-        row = rowview.RowView(datum)
+    def store_info(self, row):
         key = str(row.uuid)
         datum = {
             'device_id': row.external_ids.get('neutron:device_id'),
@@ -200,7 +228,7 @@ class LogicalSiwtchPorts(TreeType):
             'cidrs': row.external_ids.get('neutron:cidrs'),
             'ha_chassis_group': row.ha_chassis_group,
             'type': row.type}
-        self._root_tree.set_leaf(self.TYPE, key, datum)
+        self._root_tree.add_leaf(self.TYPE, key, self._parent_uuid, datum)
         return key
 
 
@@ -229,7 +257,8 @@ class QoSes(TreeType):
                 qos_row = rowview.RowView(qos)
                 match = self.REGEX_ID.search(qos_row.match)
                 if match:
-                    key = self.store_info(qos)
+                    qos_row = rowview.RowView(qos)
+                    key = self.store_info(qos_row)
                     self.__class__.EXTID_QOS_MAP[match.group('id')].append(
                         self._root_tree.get_leaf(self.TYPE, key))
 
@@ -245,14 +274,13 @@ class QoSes(TreeType):
              'bandwidth': datum['bandwidth'], 'direction': datum['direction'],
              'match': datum['match']})
 
-    def store_info(self, datum):
-        row = rowview.RowView(datum)
+    def store_info(self, row):
         key = str(row.uuid)
         datum = {
             'uuid': key, 'action': row.action, 'match': row.match,
             'bandwidth': row.bandwidth, 'priority': row.priority,
             'direction': row.direction, 'external_ids': row.external_ids}
-        self._root_tree.set_leaf(self.TYPE, key, datum)
+        self._root_tree.add_leaf(self.TYPE, key, self._parent_uuid, datum)
         return key
 
 
@@ -260,28 +288,22 @@ class PortGroups(TreeType):
 
     TYPE = constants.PORT_GROUP
 
-    def __init__(self, treeview, ovn_nb, ovn_sb, parent_leaf=None):
-        super(PortGroups, self).__init__(treeview, ovn_nb, ovn_sb,
-                                         parent_leaf=parent_leaf)
-        self._acl_trees = {}
-
     def populate_subtree(self, uuids=None):
         self._child_trees = {}
         for pg in self._ovn_nb.tables[self.TYPE].rows.values():
-            key = self.store_info(pg)
-            text = key
+            pg_row = rowview.RowView(pg)
+            uuid = self.store_info(pg_row)
+            text = uuid
             sg = pg._data['external_ids'].get('neutron:security_group_id')
             if sg:
                 text += ' (Neutron SG: %s)' % sg
             child_leaf = self._treeview.insert(
-                self.own_leaf, 'end', key, text=text, tags=self.TYPE,
-                values=key)
+                self.own_leaf, 'end', uuid, text=text, tags=self.TYPE,
+                values=uuid)
             acl_tt = ACLs(
                 self._root_tree, self._ovn_nb, self._ovn_sb,
-                parent_leaf=child_leaf)
-            acl_tt.populate_subtree(uuids=[port.value for port in
-                                           pg._data['acls'].values.keys()])
-            self._acl_trees[pg.uuid] = acl_tt
+                parent_leaf=child_leaf, parent_uuid=uuid)
+            acl_tt.populate_subtree(uuids=[acls.uuid for acls in pg_row.acls])
 
     @staticmethod
     def print_info(text_box, datum):
@@ -290,12 +312,11 @@ class PortGroups(TreeType):
             'external_ids: %(external_ids)s' %
             {'name': datum['name'], 'external_ids': datum['external_ids']})\
 
-    def store_info(self, datum):
-        row = rowview.RowView(datum)
+    def store_info(self, row):
         key = str(row.uuid)
         datum = {'name': row.name,
                  'external_ids': row.external_ids}
-        self._root_tree.set_leaf(self.TYPE, key, datum)
+        self._root_tree.add_leaf(self.TYPE, key, None, datum)
         return key
 
 
@@ -306,7 +327,8 @@ class ACLs(TreeType):
     def populate_subtree(self, parent_leaf=None, uuids=None):
         for uuid in uuids:
             acl = self._ovn_nb.tables[self.TYPE].rows.get(uuid)
-            key = self.store_info(acl)
+            acl_row = rowview.RowView(acl)
+            key = self.store_info(acl_row)
             self._treeview.insert(
                 self.own_leaf, 'end', key, text=key, tags=self.TYPE,
                 values=key)
@@ -322,13 +344,12 @@ class ACLs(TreeType):
              'meter': datum['meter'], 'direction': datum['direction'],
              'match': datum['match'], 'severity': datum['severity']})
 
-    def store_info(self, datum):
-        row = rowview.RowView(datum)
+    def store_info(self, row):
         key = str(row.uuid)
         datum = {
             'name': row.name, 'priority': row.priority,
             'direction': row.direction, 'external_ids': row.external_ids,
             'meter': row.meter, 'match': row.match, 'action': row.action,
             'severity': row.severity}
-        self._root_tree.set_leaf(self.TYPE, key, datum)
+        self._root_tree.add_leaf(self.TYPE, key, self._parent_uuid, datum)
         return key
