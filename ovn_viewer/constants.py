@@ -19,3 +19,6 @@ QOS = 'QoS'
 ACL = 'ACL'
 #DHCP_OPTIONS = 'DHCP_Options'
 #GATEWAY_CHASSIS = 'Gateway_Chassis'
+
+NOTIFY_ELEMENT_TYPES = (LOGICAL_SWITCH, LOGICAL_SWITCH_PORT, PORT_GROUP,
+                        QOS, ACL)

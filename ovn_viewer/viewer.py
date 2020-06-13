@@ -5,19 +5,17 @@ import tkinter
 from tkinter import font
 from tkinter import ttk
 
+from ovn_viewer import connection
 from ovn_viewer import constants
 from ovn_viewer import treetypes
 
 
 class OvnViewer(tkinter.Frame):
 
-    def __init__(self, master_window, ovn_nb, ovn_sb):
+    def __init__(self, master_window):
         super(OvnViewer, self).__init__(master=master_window)
-        self._ovn_nb = ovn_nb
-        self._ovn_sb = ovn_sb
         self.root_tree = None
         self._configure_monspace_font()
-        self._init_ui()
 
     def _configure_monspace_font(self):
         for font_family in (ff for ff in font.families()
@@ -44,7 +42,7 @@ class OvnViewer(tkinter.Frame):
                                  command=self._menu_disable_refresh)
         menubar.add_cascade(label='IDL events', menu=refresh_menu)
 
-    def _init_ui(self):
+    def init_ui(self):
         self._add_menu()
 
         master_frame = tkinter.Frame(master=self.master)
@@ -70,9 +68,14 @@ class OvnViewer(tkinter.Frame):
         self.text_box.set('(no item selected)')
         self.treeview.bind('<<TreeviewSelect>>', self._event_select)
 
-        self.root_tree = treetypes.RootTree(self.treeview, self._ovn_nb,
-                                            self._ovn_sb)
+        self.root_tree = treetypes.RootTree(self.treeview)
+        self._ovn_nb, self._ovn_sb = connection.get_ovn_conn(self.root_tree)
+        self.root_tree.update_ovn_connections(self._ovn_nb, self._ovn_sb)
         self.root_tree.populate_subtree()
+
+        #RAH
+        #self.treeview.delete()
+        a=1
 
     def _menu_exit(self):
         self.quit()
